@@ -1,6 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from passlib.context import CryptContext
 
 from app.database import get_db
 from app.models.user import User
@@ -10,14 +9,22 @@ from app.utils.jwt_handler import create_access_token
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
+# =========================
+# REGISTER
+# =========================
 @router.post("/register", response_model=UserResponse)
 def register(user: UserCreate, db: Session = Depends(get_db)):
-    existing_user = db.query(User).filter(User.email == user.email).first()
-    if existing_user:
-        raise HTTPException(status_code=400, detail="Email already registered")
 
+    existing_user = db.query(User).filter(User.email == user.email).first()
+
+    if existing_user:
+        raise HTTPException(
+            status_code=400,
+            detail="Email already registered"
+        )
+
+    # TEMPORARY PASSWORD SAVE
     hashed_password = user.password
 
     new_user = User(
@@ -32,12 +39,21 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
 
     return new_user
 
+
+# =========================
+# LOGIN
+# =========================
 @router.post("/login", response_model=TokenResponse)
 def login(user: LoginRequest, db: Session = Depends(get_db)):
+
     db_user = db.query(User).filter(User.email == user.email).first()
 
-    if not db_user or not pwd_context.verify(user.password, db_user.password_hash):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+    # TEMPORARY PASSWORD CHECK
+    if not db_user or user.password != db_user.password_hash:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid email or password"
+        )
 
     token = create_access_token({
         "sub": db_user.email,

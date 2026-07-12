@@ -37,13 +37,23 @@ def encrypt_file_api(file_id: int, db: Session = Depends(get_db)):
 def decrypt_file_api(file_id: int, key: str, db: Session = Depends(get_db)):
     file = db.query(File).filter(File.id == file_id).first()
 
-    if not file or not file.encrypted_path:
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    input_path = file.encrypted_path if file.encrypted_path else file.file_path
+
+    if not input_path or not os.path.exists(input_path):
         raise HTTPException(status_code=404, detail="Encrypted file not found")
+
+    os.makedirs("decrypted", exist_ok=True)
 
     decrypted_filename = "dec_" + file.stored_filename
     decrypted_path = os.path.join("decrypted", decrypted_filename)
 
-    decrypt_file(file.encrypted_path, decrypted_path, key.encode())
+    try:
+        decrypt_file(input_path, decrypted_path, key.encode())
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid decryption key or corrupted file")
 
     file.decrypted_path = decrypted_path
     file.status = "decrypted"
@@ -51,5 +61,6 @@ def decrypt_file_api(file_id: int, key: str, db: Session = Depends(get_db)):
     db.commit()
 
     return {
-        "message": "File decrypted"
+        "message": "File decrypted",
+        "decrypted_path": decrypted_path
     }

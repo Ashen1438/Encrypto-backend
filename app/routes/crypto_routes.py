@@ -186,10 +186,11 @@ def encrypt_file_with_password_api(
 
     try:
         encrypt_file_with_password(
-            input_path=file_record.file_path,
-            output_path=encrypted_path,
-            password=data.password,
-        )
+    input_path=file_record.file_path,
+    output_path=encrypted_path,
+    password=data.password,
+    mode=data.mode,
+)
     except Exception as error:
         raise HTTPException(
             status_code=500,
@@ -246,10 +247,11 @@ def decrypt_file_with_password_api(
 
     try:
         decrypt_file_with_password(
-            input_path=input_path,
-            output_path=decrypted_path,
-            password=data.password,
-        )
+        input_path=input_path,
+        output_path=decrypted_path,
+        password=data.password,
+        expected_mode=data.mode,
+)
     except ValueError as error:
         raise HTTPException(
             status_code=400,

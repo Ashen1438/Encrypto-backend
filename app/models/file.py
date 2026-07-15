@@ -16,5 +16,6 @@ class File(Base):
     decrypted_path = Column(String)
 
     status = Column(String, default="uploaded")
+    protection_mode = Column(String, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)

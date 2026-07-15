@@ -20,6 +20,7 @@ router = APIRouter(prefix="/crypto", tags=["Crypto"])
 
 class PasswordRequest(BaseModel):
     password: str = Field(min_length=6, max_length=128)
+    mode: str
 
 
 def get_file_or_404(
@@ -94,6 +95,7 @@ def encrypt_file_api(
 
     file_record.encrypted_path = encrypted_path
     file_record.status = "encrypted"
+    file_record.protection_mode = "biometric"
 
     db.commit()
     db.refresh(file_record)
@@ -162,6 +164,12 @@ def encrypt_file_with_password_api(
 ):
     file_record = get_file_or_404(file_id, db)
 
+    if data.mode not in ["hybrid", "password_only"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid protection mode",
+        )
+
     if not file_record.file_path or not os.path.exists(file_record.file_path):
         raise HTTPException(
             status_code=404,
@@ -190,16 +198,16 @@ def encrypt_file_with_password_api(
 
     file_record.encrypted_path = encrypted_path
     file_record.status = "password_encrypted"
+    file_record.protection_mode = data.mode
 
     db.commit()
     db.refresh(file_record)
 
     return {
-        "message": "File encrypted with sharing password",
-        "mode": "password",
+        "message": "File encrypted with password protection",
+        "mode": data.mode,
         "file_id": file_record.id,
     }
-
 
 @router.post("/decrypt-password/{file_id}")
 def decrypt_file_with_password_api(
@@ -208,6 +216,23 @@ def decrypt_file_with_password_api(
     db: Session = Depends(get_db),
 ):
     file_record = get_file_or_404(file_id, db)
+
+    if data.mode not in ["hybrid", "password_only"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid protection mode",
+        )
+
+    if file_record.protection_mode != data.mode:
+        actual_mode = file_record.protection_mode or "unknown"
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Protection mode mismatch. "
+                f"This file requires {actual_mode} mode."
+            ),
+        )
 
     input_path = get_encrypted_input_path(file_record)
 
@@ -243,8 +268,8 @@ def decrypt_file_with_password_api(
     db.refresh(file_record)
 
     return {
-        "message": "File decrypted with sharing password",
-        "mode": "password",
+        "message": "File decrypted with password protection",
+        "mode": data.mode,
         "file_id": file_record.id,
         "decrypted_path": decrypted_path,
     }

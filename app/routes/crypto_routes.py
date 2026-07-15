@@ -224,16 +224,6 @@ def decrypt_file_with_password_api(
             detail="Invalid protection mode",
         )
 
-    if file_record.protection_mode != data.mode:
-        actual_mode = file_record.protection_mode or "unknown"
-
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Protection mode mismatch. "
-                f"This file requires {actual_mode} mode."
-            ),
-        )
 
     input_path = get_encrypted_input_path(file_record)
 
@@ -265,6 +255,7 @@ def decrypt_file_with_password_api(
 
     file_record.decrypted_path = decrypted_path
     file_record.status = "password_decrypted"
+    file_record.protection_mode = data.mode
 
     db.commit()
     db.refresh(file_record)

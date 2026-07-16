@@ -15,6 +15,7 @@ import uuid
 
 from app.database import get_db
 from app.models.security_incident import SecurityIncident
+from fastapi.responses import FileResponse
 
 
 router = APIRouter(
@@ -94,3 +95,78 @@ def create_security_incident(
         "image_available": image_path is not None,
         "created_at": incident.created_at,
     }
+    
+@router.get("/incidents")
+def list_security_incidents(
+    user_id: int | None = None,
+    db: Session = Depends(get_db),
+):
+    query = db.query(SecurityIncident)
+
+    if user_id is not None:
+        query = query.filter(
+            SecurityIncident.user_id == user_id
+        )
+
+    incidents = (
+        query
+        .order_by(SecurityIncident.created_at.desc())
+        .all()
+    )
+
+    return {
+        "count": len(incidents),
+        "incidents": [
+            {
+                "id": incident.id,
+                "user_id": incident.user_id,
+                "incident_type": incident.incident_type,
+                "reason": incident.reason,
+                "device_info": incident.device_info,
+                "ip_address": incident.ip_address,
+                "image_available": incident.image_path is not None,
+                "image_url": (
+                    f"/security/incidents/{incident.id}/image"
+                    if incident.image_path
+                    else None
+                ),
+                "created_at": incident.created_at,
+            }
+            for incident in incidents
+        ],
+    }
+@router.get("/incidents/{incident_id}/image")
+def get_security_incident_image(
+    incident_id: int,
+    db: Session = Depends(get_db),
+):
+    incident = (
+        db.query(SecurityIncident)
+        .filter(SecurityIncident.id == incident_id)
+        .first()
+    )
+
+    if not incident:
+        raise HTTPException(
+            status_code=404,
+            detail="Security incident not found",
+        )
+
+    if not incident.image_path:
+        raise HTTPException(
+            status_code=404,
+            detail="No image recorded for this incident",
+        )
+
+    if not os.path.exists(incident.image_path):
+        raise HTTPException(
+            status_code=404,
+            detail="Incident image file not found",
+        )
+
+    return FileResponse(
+        path=incident.image_path,
+        media_type="image/jpeg",
+        filename=os.path.basename(incident.image_path),
+    )
+    

@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from app.database import Base, engine
 from app.routes import auth_routes
-from app.models import user, file
+from app.models import user, file, security_incident
 from app.routes import auth_routes, file_routes
 from app.routes import crypto_routes
 from app.routes import ai_routes

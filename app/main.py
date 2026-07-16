@@ -6,6 +6,7 @@ from app.routes import auth_routes, file_routes
 from app.routes import crypto_routes
 from app.routes import ai_routes
 from app.routes import stego_routes
+from app.routes import security_routes
 
 Base.metadata.create_all(bind=engine)
 
@@ -15,6 +16,7 @@ app.include_router(stego_routes.router)
 app.include_router(ai_routes.router)
 app.include_router(crypto_routes.router)
 app.include_router(auth_routes.router)
+app.include_router(security_routes.router)
 
 @app.get("/")
 def root():

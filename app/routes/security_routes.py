@@ -16,6 +16,7 @@ import uuid
 from app.database import get_db
 from app.models.security_incident import SecurityIncident
 from fastapi.responses import FileResponse
+from app.models.user import User
 
 
 router = APIRouter(
@@ -36,6 +37,7 @@ def create_security_incident(
     user_id: int | None = Form(None),
     image: UploadFile | None = FastFile(None),
     db: Session = Depends(get_db),
+    attempted_email: str | None = Form(None),
 ):
     image_path = None
 
@@ -74,8 +76,20 @@ def create_security_incident(
     if request.client is not None:
         client_ip = request.client.host
 
+    resolved_user_id = user_id
+
+    if resolved_user_id is None and attempted_email:
+        matched_user = (
+            db.query(User)
+            .filter(User.email == attempted_email.strip().lower())
+            .first()
+        )
+
+        if matched_user:
+            resolved_user_id = matched_user.id
+
     incident = SecurityIncident(
-        user_id=user_id,
+        user_id=resolved_user_id,
         incident_type=incident_type,
         reason=reason,
         image_path=image_path,
@@ -95,7 +109,7 @@ def create_security_incident(
         "image_available": image_path is not None,
         "created_at": incident.created_at,
     }
-    
+
 @router.get("/incidents")
 def list_security_incidents(
     user_id: int | None = None,

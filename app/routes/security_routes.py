@@ -8,6 +8,8 @@ from fastapi import (
     UploadFile,
 )
 from sqlalchemy.orm import Session
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import os
 import shutil
@@ -95,6 +97,7 @@ def create_security_incident(
         image_path=image_path,
         device_info=device_info,
         ip_address=client_ip,
+        created_at=datetime.now(ZoneInfo("Asia/Colombo"))
     )
 
     db.add(incident)

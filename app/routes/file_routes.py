@@ -72,3 +72,70 @@ def download_file(
         filename=filename,
         media_type="application/octet-stream"
     )
+
+
+@router.get("/dashboard")
+def get_vault_dashboard(
+    db: Session = Depends(get_db),
+):
+    # TEMP: Upload route currently saves files under user_id=1
+    base_query = db.query(File).filter(File.user_id == 1)
+
+    encrypted_files = base_query.filter(
+        File.encrypted_path.isnot(None)
+    ).count()
+
+    protected_sessions = base_query.filter(
+        File.protection_mode.isnot(None)
+    ).count()
+
+    recent_records = (
+        base_query
+        .order_by(File.created_at.desc())
+        .limit(10)
+        .all()
+    )
+
+    recent_files = []
+
+    for file_record in recent_records:
+        available_path = None
+
+        possible_paths = [
+            file_record.decrypted_path,
+            file_record.encrypted_path,
+            file_record.file_path,
+        ]
+
+        for path in possible_paths:
+            if path and os.path.exists(path):
+                available_path = path
+                break
+
+        size_bytes = None
+
+        if available_path:
+            try:
+                size_bytes = os.path.getsize(available_path)
+            except OSError:
+                size_bytes = None
+
+        recent_files.append({
+            "file_id": file_record.id,
+            "name": file_record.original_filename,
+            "status": file_record.status,
+            "protection_mode": file_record.protection_mode,
+            "size_bytes": size_bytes,
+            "created_at": (
+                file_record.created_at.isoformat()
+                if file_record.created_at
+                else None
+            ),
+        })
+
+    return {
+        "encrypted_files": encrypted_files,
+        "cloud_synced": 0,
+        "protected_sessions": protected_sessions,
+        "recent_files": recent_files,
+    }

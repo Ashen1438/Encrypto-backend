@@ -1,5 +1,6 @@
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     Depends,
     File as FastFile,
     Form,
@@ -7,6 +8,10 @@ from fastapi import (
     Request,
     UploadFile,
 )
+from app.services.email_service import (
+    send_security_alert_email,
+)
+
 from sqlalchemy.orm import Session
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -32,6 +37,7 @@ os.makedirs(SECURITY_IMAGE_DIR, exist_ok=True)
 
 @router.post("/incidents")
 def create_security_incident(
+    background_tasks: BackgroundTasks,
     request: Request,
     reason: str = Form(...),
     incident_type: str = Form("unauthorized_access"),
@@ -78,17 +84,30 @@ def create_security_incident(
     if request.client is not None:
         client_ip = request.client.host
 
-    resolved_user_id = user_id
+        resolved_user_id = user_id
+    alert_recipient_email = None
+    matched_user = None
 
-    if resolved_user_id is None and attempted_email:
+    if resolved_user_id is not None:
         matched_user = (
             db.query(User)
-            .filter(User.email == attempted_email.strip().lower())
+            .filter(User.id == resolved_user_id)
             .first()
         )
 
-        if matched_user:
-            resolved_user_id = matched_user.id
+    elif attempted_email:
+        matched_user = (
+            db.query(User)
+            .filter(
+                User.email
+                == attempted_email.strip().lower()
+            )
+            .first()
+        )
+
+    if matched_user:
+        resolved_user_id = matched_user.id
+        alert_recipient_email = matched_user.email
 
     incident = SecurityIncident(
         user_id=resolved_user_id,
@@ -103,6 +122,18 @@ def create_security_incident(
     db.add(incident)
     db.commit()
     db.refresh(incident)
+    
+    background_tasks.add_task(
+        send_security_alert_email,
+        incident_id=incident.id,
+        incident_type=incident.incident_type,
+        reason=incident.reason,
+        device_info=incident.device_info,
+        ip_address=incident.ip_address,
+        created_at=incident.created_at,
+        recipient_email=alert_recipient_email,
+        image_path=incident.image_path,
+    )
 
     return {
         "message": "Security incident recorded",

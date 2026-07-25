@@ -5,6 +5,7 @@ from pydantic import BaseModel
 import io
 import os
 import re
+import gc
 
 import fitz
 import joblib
@@ -17,35 +18,34 @@ from app.models.file import File
 from PIL import Image
 from rapidocr_onnxruntime import RapidOCR
 
-model = joblib.load(
-    "app/ml/risk_model.pkl"
-)
+MODEL_PATH = "app/ml/risk_model.pkl"
 
 encoder = joblib.load(
     "app/ml/extension_encoder.pkl"
 )
 
-_ocr_engine = None
-
-
-def get_ocr_engine() -> RapidOCR:
-    global _ocr_engine
-
-    if _ocr_engine is None:
-        _ocr_engine = RapidOCR()
-
-    return _ocr_engine
-
-
 def run_ocr_on_image(
     image: Image.Image,
 ) -> str:
+    working_image = None
+    image_array = None
+    ocr_engine = None
+
     try:
-        image_array = np.array(
-            image.convert("RGB")
+        working_image = image.convert("RGB")
+
+        # Reduce memory usage for large screenshots/photos
+        working_image.thumbnail(
+            (1600, 1600)
         )
 
-        result, _ = get_ocr_engine()(
+        image_array = np.array(
+            working_image
+        )
+
+        ocr_engine = RapidOCR()
+
+        result, _ = ocr_engine(
             image_array
         )
 
@@ -80,6 +80,14 @@ def run_ocr_on_image(
 
         return ""
 
+    finally:
+        if working_image is not None:
+            working_image.close()
+
+        del image_array
+        del ocr_engine
+
+        gc.collect()
 
 def extract_text_from_pdf(
     path: str,
@@ -221,29 +229,6 @@ def extract_text_from_file(
                 f"{type(error).__name__}: "
                 f"{error}"
             )
-            return ""
-
-    return ""
-    ext = os.path.splitext(
-        path
-    )[1].lower()
-
-    if ext in [
-        ".txt",
-        ".csv",
-        ".json",
-        ".log",
-    ]:
-        try:
-            with open(
-                path,
-                "r",
-                encoding="utf-8",
-                errors="ignore",
-            ) as file:
-                return file.read(5000)
-
-        except Exception:
             return ""
 
     return ""
@@ -423,15 +408,30 @@ def predict_risk(
         [features]
     )
 
-    probabilities = model.predict_proba(
-        data_frame
-    )[0]
+    risk_model = joblib.load(
+        MODEL_PATH
+    )
+
+    try:
+        probabilities = (
+            risk_model.predict_proba(
+                data_frame
+            )[0]
+        )
+
+        model_classes = (
+            risk_model.classes_.copy()
+        )
+
+    finally:
+        del risk_model
+        gc.collect()
 
     prediction_index = (
         probabilities.argmax()
     )
 
-    prediction = model.classes_[
+    prediction = model_classes[
         prediction_index
     ]
 
@@ -445,11 +445,10 @@ def predict_risk(
     probability_map = {
         class_name: float(probability)
         for class_name, probability in zip(
-            model.classes_,
+            model_classes,
             probabilities,
         )
     }
-
     risk_score = round(
         (
             probability_map.get(
@@ -638,9 +637,9 @@ def analyze_uploaded_file(
     )
     
     print(
-    f"AI extracted {len(text)} characters "
-    f"from {file.original_filename}"
-)
+        f"AI extracted {len(text)} characters "
+        f"from {file.original_filename}"
+    )
 
     size_kb = (
         os.path.getsize(

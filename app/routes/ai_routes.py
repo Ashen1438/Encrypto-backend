@@ -2,15 +2,20 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
+import io
 import os
 import re
 
+import fitz
 import joblib
+import numpy as np
 import pandas as pd
 
 from app.database import get_db
 from app.models.file import File
 
+from PIL import Image
+from rapidocr_onnxruntime import RapidOCR
 
 model = joblib.load(
     "app/ml/risk_model.pkl"
@@ -20,7 +25,137 @@ encoder = joblib.load(
     "app/ml/extension_encoder.pkl"
 )
 
+_ocr_engine = None
 
+
+def get_ocr_engine() -> RapidOCR:
+    global _ocr_engine
+
+    if _ocr_engine is None:
+        _ocr_engine = RapidOCR()
+
+    return _ocr_engine
+
+
+def run_ocr_on_image(
+    image: Image.Image,
+) -> str:
+    try:
+        image_array = np.array(
+            image.convert("RGB")
+        )
+
+        result, _ = get_ocr_engine()(
+            image_array
+        )
+
+        if not result:
+            return ""
+
+        extracted_lines = []
+
+        for item in result:
+            if len(item) < 2:
+                continue
+
+            detected_text = str(
+                item[1]
+            ).strip()
+
+            if detected_text:
+                extracted_lines.append(
+                    detected_text
+                )
+
+        return "\n".join(
+            extracted_lines
+        )
+
+    except Exception as error:
+        print(
+            "Image OCR failed: "
+            f"{type(error).__name__}: "
+            f"{error}"
+        )
+
+        return ""
+
+
+def extract_text_from_pdf(
+    path: str,
+) -> str:
+    extracted_sections = []
+
+    try:
+        document = fitz.open(path)
+
+        try:
+            maximum_pages = min(
+                document.page_count,
+                5,
+            )
+
+            for page_number in range(
+                maximum_pages
+            ):
+                page = document.load_page(
+                    page_number
+                )
+
+                direct_text = page.get_text(
+                    "text"
+                ).strip()
+
+                if direct_text:
+                    extracted_sections.append(
+                        direct_text
+                    )
+
+                if len(direct_text) < 40:
+                    pixmap = page.get_pixmap(
+                        matrix=fitz.Matrix(
+                            2.0,
+                            2.0,
+                        ),
+                        alpha=False,
+                    )
+
+                    image_bytes = pixmap.tobytes(
+                        "png"
+                    )
+
+                    image = Image.open(
+                        io.BytesIO(
+                            image_bytes
+                        )
+                    )
+
+                    ocr_text = run_ocr_on_image(
+                        image
+                    )
+
+                    if ocr_text:
+                        extracted_sections.append(
+                            ocr_text
+                        )
+
+        finally:
+            document.close()
+
+    except Exception as error:
+        print(
+            "PDF extraction failed: "
+            f"{type(error).__name__}: "
+            f"{error}"
+        )
+
+        return ""
+
+    combined_text = "\n".join(
+        extracted_sections
+    )
+
+    return combined_text[:15000]
 router = APIRouter(
     prefix="/ai",
     tags=["AI Security Advisor"],
@@ -35,6 +170,60 @@ class FileAnalyzeRequest(BaseModel):
 def extract_text_from_file(
     path: str,
 ) -> str:
+    ext = os.path.splitext(
+        path
+    )[1].lower()
+
+    if ext in [
+        ".txt",
+        ".csv",
+        ".json",
+        ".log",
+    ]:
+        try:
+            with open(
+                path,
+                "r",
+                encoding="utf-8",
+                errors="ignore",
+            ) as file:
+                return file.read(15000)
+
+        except Exception as error:
+            print(
+                "Text extraction failed: "
+                f"{type(error).__name__}: "
+                f"{error}"
+            )
+            return ""
+
+    if ext == ".pdf":
+        return extract_text_from_pdf(
+            path
+        )
+
+    if ext in [
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".webp",
+        ".bmp",
+    ]:
+        try:
+            with Image.open(path) as image:
+                return run_ocr_on_image(
+                    image
+                )
+
+        except Exception as error:
+            print(
+                "Image loading failed: "
+                f"{type(error).__name__}: "
+                f"{error}"
+            )
+            return ""
+
+    return ""
     ext = os.path.splitext(
         path
     )[1].lower()
@@ -150,14 +339,17 @@ def predict_risk(
             )
         ),
 
-        "has_nic": int(
-            bool(
-                re.search(
-                    r"\b\d{12}\b|\b\d{9}[vVxX]\b",
-                    content,
-                )
-            )
-        ),
+       "has_nic": int(
+    bool(
+        re.search(
+            r"\b(?:nic|national\s+identity(?:\s+card)?|identity\s+card)"
+            r"\b[\s:#-]{0,20}"
+            r"(?:\d{12}|\d{9}[vVxX])\b",
+            content,
+            re.IGNORECASE,
+        )
+    )
+),
 
         "has_card": int(
             bool(
@@ -444,6 +636,11 @@ def analyze_uploaded_file(
     text = extract_text_from_file(
         file.file_path
     )
+    
+    print(
+    f"AI extracted {len(text)} characters "
+    f"from {file.original_filename}"
+)
 
     size_kb = (
         os.path.getsize(

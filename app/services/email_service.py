@@ -1,9 +1,9 @@
-import mimetypes
+import base64
 import os
-import smtplib
 
 from datetime import datetime
-from email.message import EmailMessage
+
+import requests
 
 
 def send_security_alert_email(
@@ -18,36 +18,32 @@ def send_security_alert_email(
     image_path: str | None = None,
 ) -> bool:
     try:
-        smtp_host = os.getenv(
-            "SMTP_HOST",
-            "smtp.gmail.com",
+        api_key = os.getenv("BREVO_API_KEY")
+
+        sender_email = os.getenv(
+            "ALERT_FROM_EMAIL"
         )
 
-        smtp_port = int(
-            os.getenv("SMTP_PORT", "587")
-        )
-
-        smtp_user = os.getenv("SMTP_USER")
-        smtp_password = os.getenv(
-            "SMTP_APP_PASSWORD"
+        fallback_email = os.getenv(
+            "ALERT_EMAIL"
         )
 
         alert_email = (
             recipient_email
-            or os.getenv("ALERT_EMAIL")
+            or fallback_email
         )
 
-        if not smtp_user:
+        if not api_key:
             print(
                 "Email alert skipped: "
-                "SMTP_USER is missing"
+                "BREVO_API_KEY is missing"
             )
             return False
 
-        if not smtp_password:
+        if not sender_email:
             print(
                 "Email alert skipped: "
-                "SMTP_APP_PASSWORD is missing"
+                "ALERT_FROM_EMAIL is missing"
             )
             return False
 
@@ -58,22 +54,11 @@ def send_security_alert_email(
             )
             return False
 
-        message = EmailMessage()
-
-        message["Subject"] = (
-            "Encrypto Security Alert: "
-            "Unauthorized Access Attempt"
-        )
-
-        message["From"] = smtp_user
-        message["To"] = alert_email
-
         formatted_time = created_at.strftime(
             "%d/%m/%Y %I:%M:%S %p"
         )
 
-        message.set_content(
-            f"""
+        email_body = f"""
 Encrypto detected an unauthorized access attempt.
 
 Incident ID: {incident_id}
@@ -87,58 +72,79 @@ Please open the Encrypto Security page for more details.
 
 This is an automated security alert from Encrypto.
 """.strip()
-        )
 
-        if image_path and os.path.exists(image_path):
-            mime_type, _ = mimetypes.guess_type(
-                image_path
-            )
+        payload = {
+            "sender": {
+                "name": "Encrypto Security",
+                "email": sender_email,
+            },
+            "to": [
+                {
+                    "email": alert_email,
+                }
+            ],
+            "subject": (
+                "Encrypto Security Alert: "
+                "Unauthorized Access Attempt"
+            ),
+            "textContent": email_body,
+        }
 
-            if mime_type:
-                main_type, sub_type = (
-                    mime_type.split("/", 1)
-                )
-            else:
-                main_type = "application"
-                sub_type = "octet-stream"
+        if (
+            image_path
+            and os.path.exists(image_path)
+        ):
+            with open(
+                image_path,
+                "rb",
+            ) as image_file:
+                encoded_image = base64.b64encode(
+                    image_file.read()
+                ).decode("utf-8")
 
-            with open(image_path, "rb") as image_file:
-                message.add_attachment(
-                    image_file.read(),
-                    maintype=main_type,
-                    subtype=sub_type,
-                    filename=os.path.basename(
+            payload["attachment"] = [
+                {
+                    "name": os.path.basename(
                         image_path
                     ),
-                )
+                    "content": encoded_image,
+                }
+            ]
 
-        with smtplib.SMTP(
-            smtp_host,
-            smtp_port,
-            timeout=10,
-        ) as smtp_server:
-            smtp_server.ehlo()
-            smtp_server.starttls()
-            smtp_server.ehlo()
-
-            smtp_server.login(
-                smtp_user,
-                smtp_password,
-            )
-
-            smtp_server.send_message(message)
-
-        print(
-            "Security alert email sent to "
-            f"{alert_email}"
+        response = requests.post(
+            "https://api.brevo.com/v3/smtp/email",
+            headers={
+                "accept": "application/json",
+                "content-type": "application/json",
+                "api-key": api_key,
+            },
+            json=payload,
+            timeout=20,
         )
 
-        return True
+        if response.status_code in {
+            200,
+            201,
+            202,
+        }:
+            print(
+                "Security alert email sent to "
+                f"{alert_email}"
+            )
+            return True
+
+        print(
+            "Security alert email failed: "
+            f"{response.status_code} "
+            f"{response.text}"
+        )
+
+        return False
 
     except Exception as error:
         print(
             "Security alert email failed: "
+            f"{type(error).__name__}: "
             f"{error}"
         )
-
         return False

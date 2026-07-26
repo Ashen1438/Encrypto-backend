@@ -12,6 +12,8 @@ import pandas as pd
 
 from app.database import get_db
 from app.models.file import File
+from app.models.user import User
+from app.utils.auth_dependency import get_current_user
 
 
 
@@ -494,10 +496,16 @@ def analyze_file(
 def analyze_uploaded_file(
     file_id: int,
     db: Session = Depends(get_db),
+    current_user: User = Depends(
+        get_current_user
+    ),
 ):
     file = (
         db.query(File)
-        .filter(File.id == file_id)
+        .filter(
+            File.id == file_id,
+            File.user_id == current_user.id,
+        )
         .first()
     )
 
@@ -624,12 +632,18 @@ def analyze_uploaded_file(
 def analyze_ocr_text(
     data: OcrAnalyzeRequest,
     db: Session = Depends(get_db),
+    current_user: User = Depends(
+        get_current_user
+    ),
 ):
     file = (
-        db.query(File)
-        .filter(File.id == data.file_id)
-        .first()
+    db.query(File)
+    .filter(
+        File.id == data.file_id,
+        File.user_id == current_user.id,
     )
+    .first()
+)
 
     if not file:
         raise HTTPException(

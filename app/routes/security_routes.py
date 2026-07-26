@@ -25,6 +25,7 @@ from app.models.security_incident import SecurityIncident
 from fastapi.responses import FileResponse
 from app.models.user import User
 
+from app.utils.auth_dependency import get_current_user
 
 router = APIRouter(
     prefix="/security",
@@ -40,9 +41,10 @@ def create_security_incident(
     background_tasks: BackgroundTasks,
     request: Request,
     reason: str = Form(...),
-    incident_type: str = Form("unauthorized_access"),
+    incident_type: str = Form(
+        "unauthorized_access"
+    ),
     device_info: str | None = Form(None),
-    user_id: int | None = Form(None),
     image: UploadFile | None = FastFile(None),
     db: Session = Depends(get_db),
     attempted_email: str | None = Form(None),
@@ -61,11 +63,15 @@ def create_security_incident(
         ]:
             raise HTTPException(
                 status_code=400,
-                detail="Incident image must be JPG or PNG",
+                detail=(
+                    "Incident image must be "
+                    "JPG or PNG"
+                ),
             )
 
         stored_filename = (
-            f"{uuid.uuid4()}{image_extension}"
+            f"{uuid.uuid4()}"
+            f"{image_extension}"
         )
 
         image_path = os.path.join(
@@ -73,41 +79,44 @@ def create_security_incident(
             stored_filename,
         )
 
-        with open(image_path, "wb") as output_file:
+        with open(
+            image_path,
+            "wb",
+        ) as output_file:
             shutil.copyfileobj(
                 image.file,
                 output_file,
             )
 
     client_ip = None
+    resolved_user_id = None
+    alert_recipient_email = None
+    matched_user = None
 
     if request.client is not None:
         client_ip = request.client.host
 
-        resolved_user_id = user_id
-    alert_recipient_email = None
-    matched_user = None
-
-    if resolved_user_id is not None:
-        matched_user = (
-            db.query(User)
-            .filter(User.id == resolved_user_id)
-            .first()
+    if attempted_email:
+        normalized_email = (
+            attempted_email
+            .strip()
+            .lower()
         )
 
-    elif attempted_email:
         matched_user = (
             db.query(User)
             .filter(
                 User.email
-                == attempted_email.strip().lower()
+                == normalized_email
             )
             .first()
         )
 
     if matched_user:
         resolved_user_id = matched_user.id
-        alert_recipient_email = matched_user.email
+        alert_recipient_email = (
+            matched_user.email
+        )
 
     incident = SecurityIncident(
         user_id=resolved_user_id,
@@ -116,13 +125,15 @@ def create_security_incident(
         image_path=image_path,
         device_info=device_info,
         ip_address=client_ip,
-        created_at=datetime.now(ZoneInfo("Asia/Colombo"))
+        created_at=datetime.now(
+            ZoneInfo("Asia/Colombo")
+        ),
     )
 
     db.add(incident)
     db.commit()
     db.refresh(incident)
-    
+
     background_tasks.add_task(
         send_security_alert_email,
         incident_id=incident.id,
@@ -136,29 +147,33 @@ def create_security_incident(
     )
 
     return {
-        "message": "Security incident recorded",
+        "message":
+            "Security incident recorded",
         "incident_id": incident.id,
-        "incident_type": incident.incident_type,
+        "incident_type":
+            incident.incident_type,
         "reason": incident.reason,
-        "image_available": image_path is not None,
+        "image_available":
+            image_path is not None,
         "created_at": incident.created_at,
     }
 
 @router.get("/incidents")
 def list_security_incidents(
-    user_id: int | None = None,
     db: Session = Depends(get_db),
+    current_user: User = Depends(
+        get_current_user
+    ),
 ):
-    query = db.query(SecurityIncident)
-
-    if user_id is not None:
-        query = query.filter(
-            SecurityIncident.user_id == user_id
-        )
-
     incidents = (
-        query
-        .order_by(SecurityIncident.created_at.desc())
+        db.query(SecurityIncident)
+        .filter(
+            SecurityIncident.user_id
+            == current_user.id
+        )
+        .order_by(
+            SecurityIncident.created_at.desc()
+        )
         .all()
     )
 
@@ -168,17 +183,24 @@ def list_security_incidents(
             {
                 "id": incident.id,
                 "user_id": incident.user_id,
-                "incident_type": incident.incident_type,
+                "incident_type":
+                    incident.incident_type,
                 "reason": incident.reason,
-                "device_info": incident.device_info,
-                "ip_address": incident.ip_address,
-                "image_available": incident.image_path is not None,
+                "device_info":
+                    incident.device_info,
+                "ip_address":
+                    incident.ip_address,
+                "image_available":
+                    incident.image_path
+                    is not None,
                 "image_url": (
-                    f"/security/incidents/{incident.id}/image"
+                    f"/security/incidents/"
+                    f"{incident.id}/image"
                     if incident.image_path
                     else None
                 ),
-                "created_at": incident.created_at,
+                "created_at":
+                    incident.created_at,
             }
             for incident in incidents
         ],
@@ -187,10 +209,17 @@ def list_security_incidents(
 def get_security_incident_image(
     incident_id: int,
     db: Session = Depends(get_db),
+    current_user: User = Depends(
+        get_current_user
+    ),
 ):
     incident = (
         db.query(SecurityIncident)
-        .filter(SecurityIncident.id == incident_id)
+        .filter(
+            SecurityIncident.id == incident_id,
+            SecurityIncident.user_id
+            == current_user.id,
+        )
         .first()
     )
 

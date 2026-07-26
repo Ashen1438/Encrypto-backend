@@ -14,6 +14,9 @@ from app.services.encryption_service import (
     generate_key,
 )
 
+from app.models.user import User
+from app.utils.auth_dependency import get_current_user
+
 
 router = APIRouter(prefix="/crypto", tags=["Crypto"])
 
@@ -26,8 +29,16 @@ class PasswordRequest(BaseModel):
 def get_file_or_404(
     file_id: int,
     db: Session,
+    current_user: User,
 ) -> File:
-    file_record = db.query(File).filter(File.id == file_id).first()
+    file_record = (
+        db.query(File)
+        .filter(
+            File.id == file_id,
+            File.user_id == current_user.id,
+        )
+        .first()
+    )
 
     if not file_record:
         raise HTTPException(
@@ -62,8 +73,13 @@ def get_encrypted_input_path(file_record: File) -> str:
 def encrypt_file_api(
     file_id: int,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    file_record = get_file_or_404(file_id, db)
+    file_record = get_file_or_404(
+        file_id,
+        db,
+        current_user,
+    )
 
     if not file_record.file_path or not os.path.exists(file_record.file_path):
         raise HTTPException(
@@ -113,8 +129,13 @@ def decrypt_file_api(
     file_id: int,
     key: str,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    file_record = get_file_or_404(file_id, db)
+    file_record = get_file_or_404(
+        file_id,
+        db,
+        current_user,
+    )
 
     input_path = get_encrypted_input_path(file_record)
 
@@ -161,8 +182,13 @@ def encrypt_file_with_password_api(
     file_id: int,
     data: PasswordRequest,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    file_record = get_file_or_404(file_id, db)
+    file_record = get_file_or_404(
+        file_id,
+        db,
+        current_user,
+    )
 
     if data.mode not in ["hybrid", "password_only"]:
         raise HTTPException(
@@ -215,8 +241,13 @@ def decrypt_file_with_password_api(
     file_id: int,
     data: PasswordRequest,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    file_record = get_file_or_404(file_id, db)
+    file_record = get_file_or_404(
+        file_id,
+        db,
+        current_user,
+    )
 
     if data.mode not in ["hybrid", "password_only"]:
         raise HTTPException(

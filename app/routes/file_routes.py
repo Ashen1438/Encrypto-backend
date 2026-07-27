@@ -8,6 +8,9 @@ import uuid
 from app.database import get_db
 from app.models.file import File
 
+from app.models.user import User
+from app.utils.auth_dependency import get_current_user
+
 router = APIRouter(prefix="/files", tags=["Files"])
 
 UPLOAD_DIR = "uploads"
@@ -15,7 +18,8 @@ UPLOAD_DIR = "uploads"
 @router.post("/upload")
 def upload_file(
     file: UploadFile = FastFile(...),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     # unique file name
     unique_name = str(uuid.uuid4()) + "_" + file.filename
@@ -26,7 +30,7 @@ def upload_file(
         shutil.copyfileobj(file.file, buffer)
 
     new_file = File(
-        user_id=1,  # TEMP (later JWT use karamu)
+        user_id=current_user.id,
         original_filename=file.filename,
         stored_filename=unique_name,
         file_path=file_path
@@ -45,9 +49,17 @@ def upload_file(
 def download_file(
     file_id: int,
     type: str = "original",
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    file = db.query(File).filter(File.id == file_id).first()
+    file = (
+    db.query(File)
+    .filter(
+        File.id == file_id,
+        File.user_id == current_user.id,
+    )
+    .first()
+)
     if not file:
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -77,9 +89,11 @@ def download_file(
 @router.get("/dashboard")
 def get_vault_dashboard(
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    # TEMP: Upload route currently saves files under user_id=1
-    base_query = db.query(File).filter(File.user_id == 1)
+    base_query = db.query(File).filter(
+    File.user_id == current_user.id
+)
 
     encrypted_files = base_query.filter(
         File.encrypted_path.isnot(None)

@@ -2,84 +2,26 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
-import io
 import os
 import re
+import gc
 
 import fitz
 import joblib
-import numpy as np
 import pandas as pd
 
 from app.database import get_db
 from app.models.file import File
+from app.models.user import User
+from app.utils.auth_dependency import get_current_user
 
-from PIL import Image
-from rapidocr_onnxruntime import RapidOCR
 
-model = joblib.load(
-    "app/ml/risk_model.pkl"
-)
+
+MODEL_PATH = "app/ml/risk_model.pkl"
 
 encoder = joblib.load(
     "app/ml/extension_encoder.pkl"
 )
-
-_ocr_engine = None
-
-
-def get_ocr_engine() -> RapidOCR:
-    global _ocr_engine
-
-    if _ocr_engine is None:
-        _ocr_engine = RapidOCR()
-
-    return _ocr_engine
-
-
-def run_ocr_on_image(
-    image: Image.Image,
-) -> str:
-    try:
-        image_array = np.array(
-            image.convert("RGB")
-        )
-
-        result, _ = get_ocr_engine()(
-            image_array
-        )
-
-        if not result:
-            return ""
-
-        extracted_lines = []
-
-        for item in result:
-            if len(item) < 2:
-                continue
-
-            detected_text = str(
-                item[1]
-            ).strip()
-
-            if detected_text:
-                extracted_lines.append(
-                    detected_text
-                )
-
-        return "\n".join(
-            extracted_lines
-        )
-
-    except Exception as error:
-        print(
-            "Image OCR failed: "
-            f"{type(error).__name__}: "
-            f"{error}"
-        )
-
-        return ""
-
 
 def extract_text_from_pdf(
     path: str,
@@ -111,34 +53,6 @@ def extract_text_from_pdf(
                         direct_text
                     )
 
-                if len(direct_text) < 40:
-                    pixmap = page.get_pixmap(
-                        matrix=fitz.Matrix(
-                            2.0,
-                            2.0,
-                        ),
-                        alpha=False,
-                    )
-
-                    image_bytes = pixmap.tobytes(
-                        "png"
-                    )
-
-                    image = Image.open(
-                        io.BytesIO(
-                            image_bytes
-                        )
-                    )
-
-                    ocr_text = run_ocr_on_image(
-                        image
-                    )
-
-                    if ocr_text:
-                        extracted_sections.append(
-                            ocr_text
-                        )
-
         finally:
             document.close()
 
@@ -148,7 +62,6 @@ def extract_text_from_pdf(
             f"{type(error).__name__}: "
             f"{error}"
         )
-
         return ""
 
     combined_text = "\n".join(
@@ -156,6 +69,7 @@ def extract_text_from_pdf(
     )
 
     return combined_text[:15000]
+
 router = APIRouter(
     prefix="/ai",
     tags=["AI Security Advisor"],
@@ -166,6 +80,9 @@ class FileAnalyzeRequest(BaseModel):
     filename: str
     size_kb: float | None = None
 
+class OcrAnalyzeRequest(BaseModel):
+    file_id: int
+    extracted_text: str
 
 def extract_text_from_file(
     path: str,
@@ -201,50 +118,6 @@ def extract_text_from_file(
         return extract_text_from_pdf(
             path
         )
-
-    if ext in [
-        ".jpg",
-        ".jpeg",
-        ".png",
-        ".webp",
-        ".bmp",
-    ]:
-        try:
-            with Image.open(path) as image:
-                return run_ocr_on_image(
-                    image
-                )
-
-        except Exception as error:
-            print(
-                "Image loading failed: "
-                f"{type(error).__name__}: "
-                f"{error}"
-            )
-            return ""
-
-    return ""
-    ext = os.path.splitext(
-        path
-    )[1].lower()
-
-    if ext in [
-        ".txt",
-        ".csv",
-        ".json",
-        ".log",
-    ]:
-        try:
-            with open(
-                path,
-                "r",
-                encoding="utf-8",
-                errors="ignore",
-            ) as file:
-                return file.read(5000)
-
-        except Exception:
-            return ""
 
     return ""
 
@@ -423,15 +296,30 @@ def predict_risk(
         [features]
     )
 
-    probabilities = model.predict_proba(
-        data_frame
-    )[0]
+    risk_model = joblib.load(
+        MODEL_PATH
+    )
+
+    try:
+        probabilities = (
+            risk_model.predict_proba(
+                data_frame
+            )[0]
+        )
+
+        model_classes = (
+            risk_model.classes_.copy()
+        )
+
+    finally:
+        del risk_model
+        gc.collect()
 
     prediction_index = (
         probabilities.argmax()
     )
 
-    prediction = model.classes_[
+    prediction = model_classes[
         prediction_index
     ]
 
@@ -445,11 +333,10 @@ def predict_risk(
     probability_map = {
         class_name: float(probability)
         for class_name, probability in zip(
-            model.classes_,
+            model_classes,
             probabilities,
         )
     }
-
     risk_score = round(
         (
             probability_map.get(
@@ -609,10 +496,16 @@ def analyze_file(
 def analyze_uploaded_file(
     file_id: int,
     db: Session = Depends(get_db),
+    current_user: User = Depends(
+        get_current_user
+    ),
 ):
     file = (
         db.query(File)
-        .filter(File.id == file_id)
+        .filter(
+            File.id == file_id,
+            File.user_id == current_user.id,
+        )
         .first()
     )
 
@@ -633,14 +526,45 @@ def analyze_uploaded_file(
             detail="Uploaded file not found",
         )
 
+    extension = os.path.splitext(
+        file.original_filename
+    )[1].lower()
+
+    if extension in [
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".webp",
+        ".bmp",
+    ]:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Image OCR must be completed on the mobile "
+                "device and sent to /ai/analyze-ocr-text."
+            ),
+        )
+
     text = extract_text_from_file(
         file.file_path
     )
-    
+
+    if (
+        extension == ".pdf"
+        and not text.strip()
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "This PDF appears to be scanned or image-based. "
+                "OCR text is required for analysis."
+            ),
+        )
+
     print(
-    f"AI extracted {len(text)} characters "
-    f"from {file.original_filename}"
-)
+        f"AI extracted {len(text)} characters "
+        f"from {file.original_filename}"
+    )
 
     size_kb = (
         os.path.getsize(
@@ -685,6 +609,93 @@ def analyze_uploaded_file(
             + ", ".join(
                 findings[:4]
             )
+        )
+
+    else:
+        reason = (
+            "The AI model did not detect strong "
+            "sensitive-content indicators."
+        )
+
+    return {
+        "file_id": file.id,
+        "filename": file.original_filename,
+        "risk_score": score,
+        "risk_level": risk_level,
+        "confidence": confidence,
+        "recommendation": recommendation,
+        "findings": findings,
+        "reason": reason,
+    }
+    
+@router.post("/analyze-ocr-text")
+def analyze_ocr_text(
+    data: OcrAnalyzeRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        get_current_user
+    ),
+):
+    file = (
+    db.query(File)
+    .filter(
+        File.id == data.file_id,
+        File.user_id == current_user.id,
+    )
+    .first()
+)
+
+    if not file:
+        raise HTTPException(
+            status_code=404,
+            detail="File not found",
+        )
+
+    if (
+        file.file_path
+        and os.path.exists(file.file_path)
+    ):
+        size_kb = (
+            os.path.getsize(file.file_path)
+            / 1024
+        )
+    else:
+        size_kb = 0.0
+
+    (
+        risk_level,
+        confidence,
+        score,
+        findings,
+    ) = predict_risk(
+        text=data.extracted_text,
+        filename=file.original_filename,
+        size_kb=size_kb,
+    )
+
+    if risk_level == "High":
+        recommendation = (
+            "AES-256 + Biometric Protection"
+        )
+
+    elif risk_level == "Medium":
+        recommendation = (
+            "Biometric Encryption"
+        )
+
+    else:
+        recommendation = (
+            "Standard AES Encryption"
+        )
+
+    if (
+        findings
+        and findings[0]
+        != "No sensitive information patterns detected"
+    ):
+        reason = (
+            "Sensitive indicators detected: "
+            + ", ".join(findings[:4])
         )
 
     else:
